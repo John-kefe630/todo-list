@@ -1,14 +1,20 @@
-name: Continuous Integration
+name: Continuous Integration & Package Publishing
 
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*.*.*" ]
   pull_request:
     branches: [ "main" ]
 
+# Explicit permissions required to write packages to GHCR
+permissions:
+  contents: read
+  packages: write
+
 jobs:
-  ci-pipeline:
-    name: Test & Validate Docker Container
+  ci-and-publish:
+    name: Test, Build & Push to GHCR
     runs-on: ubuntu-latest
 
     steps:
@@ -30,30 +36,59 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker Image
-        run: |
-          docker build -t todo-app:ci .
+      # Build and test container locally before publishing
+      - name: Build local test Docker image
+        run: docker build -t todo-app:test .
 
-      - name: Run Docker Container
+      - name: Run test container
         run: |
-          docker run -d -p 3000:3000 --name ci-todo-container todo-app:ci
-          # Give the container 2 seconds to initialize
+          docker run -d -p 3000:3000 --name test-container todo-app:test
           sleep 2
 
       - name: Verify Container Health Endpoint
         run: |
-          echo "Testing /health endpoint on container..."
           HTTP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health)
           if [ "$HTTP_RESPONSE" -eq 200 ]; then
             echo "✅ Container Health Check Passed (HTTP 200)"
           else
             echo "❌ Container Health Check Failed (HTTP $HTTP_RESPONSE)"
-            docker logs ci-todo-container
+            docker logs test-container
             exit 1
           fi
 
       - name: Clean up test container
         if: always()
         run: |
-          docker stop ci-todo-container || true
-          docker rm ci-todo-container || true
+          docker stop test-container || true
+          docker rm test-container || true
+
+      # -----------------------------------------------------------------------
+      # GHCR Authentication & Push (Runs ONLY on main branch or tags)
+      # -----------------------------------------------------------------------
+      - name: Log in to GitHub Container Registry (GHCR)
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (Tags & Labels)
+        if: github.event_name != 'pull_request'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+            type=semver,pattern={{version}}
+
+      - name: Build and Push Docker Image to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
