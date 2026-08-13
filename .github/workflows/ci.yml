@@ -92,3 +92,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+          # -----------------------------------------------------------------------
+      # Continuous Deployment — Trigger Render Webhook
+      # -----------------------------------------------------------------------
+      - name: Trigger Deployment on Render
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "Triggering Render Deployment Hook..."
+          curl -s -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
